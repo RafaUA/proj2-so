@@ -3,6 +3,7 @@
 
 #include <stddef.h>
 #include <pthread.h>
+#include <semaphore.h>
 
 #define MAX_METHOD_LEN 16
 #define MAX_PATH_LEN   512

@@ -3,6 +3,9 @@
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
+#include <sys/socket.h>
+#include <time.h>
+#include <semaphore.h>
 
 int parse_http_request(const char* buffer, http_request_t* req) {
     char* line_end = strstr(buffer, "\r\n");
