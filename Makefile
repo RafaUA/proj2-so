@@ -14,7 +14,8 @@ SRCS    = $(SRC_DIR)/master.c \
           $(SRC_DIR)/shared_mem.c \
           $(SRC_DIR)/semaphores.c \
           $(SRC_DIR)/http.c \
-          $(SRC_DIR)/config.c
+          $(SRC_DIR)/config.c \
+		  ${SRC_DIR}/stats.c
 
 # Objetos gerados (ficam também em src/)
 OBJS    = $(SRCS:.c=.o)

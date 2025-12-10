@@ -1,7 +1,10 @@
 #include <stdio.h>
 #include <unistd.h>
 #include <errno.h>
+#include <time.h>
+#include <string.h>
 
+#include "stats.h"
 #include "worker.h"
 #include "master.h"   // para keep_running
 #include "http.h"     // para, no futuro, tratar HTTP (send_http_response, etc)
@@ -49,18 +52,46 @@ int dequeue_connection(shared_data_t* data, semaphores_t* sems) {
  *   - servir ficheiros / respostas
  *   - atualizar estatísticas, etc.
  */
-static void handle_client_connection(int client_fd, worker_args_t* args) {
-    (void)args;  // evitar warning de unused parameter
+// Retorna o tempo atual em segundos (monotónico)
+static double now_monotonic_sec() {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return ts.tv_sec + ts.tv_nsec / 1e9;
+}
 
-    // TODO: substituir por lógica HTTP real na Feature 2/3
-    // Por agora, podemos simplesmente fechar a ligação
-    // ou mandar uma resposta dummy se quiseres testar.
-    //
-    // Exemplo minimal:
-    /*
-    const char* body = "<html><body><h1>Hello from worker</h1></body></html>";
-    send_http_response(client_fd, 200, "OK", "text/html", body, strlen(body));
-    */
+static void handle_client_connection(int client_fd, worker_args_t* args) {
+    double start_time = now_monotonic_sec();
+
+    stats_request_start(args->shared, args->sems);
+
+    // *** Por agora: resposta HTTP dummy 200 OK ***
+    const char* body =
+        "<html><body><h1>Hello from worker</h1>"
+        "<p>Feature 3 stats em teste.</p>"
+        "</body></html>";
+
+    send_http_response(
+        client_fd,
+        200, "OK",
+        "text/html",
+        body,
+        strlen(body)
+    );
+
+    // Contamos apenas o tamanho do body como bytes_transferidos
+    size_t bytes = strlen(body);
+
+    double end_time = now_monotonic_sec();
+    
+    double response_time = end_time - start_time;
+
+    stats_request_end(
+        args->shared,
+        args->sems,
+        200,
+        bytes,
+        response_time
+    );
 
     close(client_fd);
 }

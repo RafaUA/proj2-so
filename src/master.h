@@ -5,6 +5,7 @@
 #include <pthread.h>
 #include "shared_mem.h"
 #include "semaphores.h"
+#include "stats.h"
 
 /**
  * Variável global usada para terminar o loop principal

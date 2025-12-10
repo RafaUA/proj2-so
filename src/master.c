@@ -6,14 +6,17 @@
 #include <errno.h>
 #include <string.h>
 #include <signal.h>
+#include <pthread.h>
+#include <time.h>
+#include <sys/time.h>
 
+#include "master.h"
+#include "http.h"      // para send_http_response()
 #include "shared_mem.h"
 #include "semaphores.h"
-#include "http.h"      // para send_http_response()
-#include "master.h"
 #include "config.h"
-#include <pthread.h>
 #include "worker.h"
+#include "stats.h"
 
 
 volatile sig_atomic_t keep_running = 1;
@@ -25,7 +28,7 @@ void signal_handler(int signum) {
     keep_running = 0;
 }
 
-static void send_503_response(int client_fd);
+static void send_503_response(int client_fd, shared_data_t* data, semaphores_t* sems);
 
 
 /*
@@ -61,19 +64,26 @@ int create_server_socket(int port) {
 /*
  * Envia uma resposta HTTP 503 simples e não bloqueante.
  */
-static void send_503_response(int client_fd) {
+static void send_503_response(int client_fd, shared_data_t* data, semaphores_t* sems) {
     const char* body =
         "<html><body><h1>503 Service Unavailable</h1>"
         "<p>Server queue is full, please try again later.</p>"
         "</body></html>";
+
+    size_t body_len = strlen(body);
 
     send_http_response(
         client_fd,
         503, "Service Unavailable",
         "text/html",
         body,
-        strlen(body)
+        body_len
     );
+
+    // Registar bytes transferidos para este 503 (contamos só o body)
+    if (data && sems) {
+        stats_record_503(data, sems, body_len);
+    }
 }
 
 
@@ -83,11 +93,9 @@ static void send_503_response(int client_fd) {
  * Retorna 0 em sucesso, -1 se falhar (já trata do socket).
  */
 int enqueue_connection(shared_data_t* data, semaphores_t* sems, int client_fd) {
-    (void)sems; // semáforos não são usados nesta fase (mutex/cond gerem o pool)
-
     if (pthread_mutex_lock(&queue_mutex) != 0) {
         perror("pthread_mutex_lock(queue_mutex)");
-        send_503_response(client_fd);
+        send_503_response(client_fd, data, sems);
         close(client_fd);
         return -1;
     }
@@ -97,9 +105,9 @@ int enqueue_connection(shared_data_t* data, semaphores_t* sems, int client_fd) {
                  : MAX_QUEUE_SIZE;
 
     if (data->queue.count >= capacity) {
-        // Fila cheia -> responde 503 e fecha
+        // Fila cheia -> responde 503, regista estatística e fecha
         pthread_mutex_unlock(&queue_mutex);
-        send_503_response(client_fd);
+        send_503_response(client_fd, data, sems);
         close(client_fd);
         return -1;
     }
@@ -223,15 +231,36 @@ int main(int argc, char* argv[]) {
         return EXIT_FAILURE;
     }
 
+    // Timeout curto para accept(), permitindo imprimir estatísticas periodicamente
+    struct timeval tv;
+    tv.tv_sec = 1;
+    tv.tv_usec = 0;
+    // 
+    if (setsockopt(listen_fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) < 0) {
+        perror("setsockopt(SO_RCVTIMEO)");
+    }
+
     printf("Master: a ouvir na porta %d (queue size = %d)\n",
            config.port, queue_size);
-
+    
+    time_t start_time = time(NULL);
+    time_t last_time_print = start_time;
     //   LOOP PRINCIPAL (master)
     while (keep_running) {
+        // A cada 30s imprime estatísticas
+        if (time(NULL) - last_time_print >= 30) {
+            stats_print(shared, &sems, difftime(time(NULL), start_time));
+            last_time_print = time(NULL);
+        }
+
         int client_fd = accept(listen_fd, NULL, NULL);
         if (client_fd < 0) {
             if (errno == EINTR) {
                 // interrompido por sinal -> verifica keep_running e continua
+                continue;
+            }
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                // timeout do accept -> permite cair no print de 30s
                 continue;
             }
             perror("accept");
@@ -258,6 +287,9 @@ int main(int argc, char* argv[]) {
     }
     free(threads);
 
+    // Mostrar estatísticas finais
+    stats_print(shared, &sems, difftime(time(NULL), start_time));
+    
     // Limpeza
     close(listen_fd);
     destroy_semaphores(&sems);
