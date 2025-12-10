@@ -16,6 +16,7 @@ typedef struct {
     int front;
     int rear;
     int count;
+    int capacity;  // capacidade lógica configurada (<= MAX_QUEUE_SIZE)
 } connection_queue_t;
 
 typedef struct {

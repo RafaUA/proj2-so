@@ -17,6 +17,8 @@
 
 
 volatile sig_atomic_t keep_running = 1;
+pthread_mutex_t queue_mutex = PTHREAD_MUTEX_INITIALIZER;
+pthread_cond_t queue_cond = PTHREAD_COND_INITIALIZER;
 
 void signal_handler(int signum) {
     (void)signum; // sinal usado apenas para terminar o loop principal
@@ -77,31 +79,26 @@ static void send_503_response(int client_fd) {
 
 /*
  * Produtor: tenta colocar um client_fd na fila.
- * Usa sem_trywait para detectar fila cheia e enviar 503.
+ * Usa mutex/cond para proteger queue e sinalizar consumidores.
  * Retorna 0 em sucesso, -1 se falhar (já trata do socket).
  */
 int enqueue_connection(shared_data_t* data, semaphores_t* sems, int client_fd) {
-    // Tentar reservar um slot sem bloquear
-    if (sem_trywait(sems->empty_slots) == -1) {
-        if (errno == EAGAIN) {
-            // Fila cheia -> responde 503 e fecha
-            send_503_response(client_fd);
-            close(client_fd);
-            return -1;
-        } else {
-            // Erro inesperado no semáforo
-            perror("sem_trywait(empty_slots)");
-            send_503_response(client_fd);
-            close(client_fd);
-            return -1;
-        }
+    (void)sems; // semáforos não são usados nesta fase (mutex/cond gerem o pool)
+
+    if (pthread_mutex_lock(&queue_mutex) != 0) {
+        perror("pthread_mutex_lock(queue_mutex)");
+        send_503_response(client_fd);
+        close(client_fd);
+        return -1;
     }
 
-    // Já está reservado um slot, agora temos que proteger o acesso à fila
-    if (sem_wait(sems->queue_mutex) == -1) {
-        perror("sem_wait(sems->queue_mutex)");
-        // Liberar o slot reservado
-        sem_post(sems->empty_slots);
+    int capacity = data->queue.capacity > 0 && data->queue.capacity <= MAX_QUEUE_SIZE
+                 ? data->queue.capacity
+                 : MAX_QUEUE_SIZE;
+
+    if (data->queue.count >= capacity) {
+        // Fila cheia -> responde 503 e fecha
+        pthread_mutex_unlock(&queue_mutex);
         send_503_response(client_fd);
         close(client_fd);
         return -1;
@@ -113,8 +110,8 @@ int enqueue_connection(shared_data_t* data, semaphores_t* sems, int client_fd) {
     data->queue.count++;
 
     // Libertar mutex e sinalizar que há mais um item
-    sem_post(sems->queue_mutex);
-    sem_post(sems->filled_slots);
+    pthread_cond_signal(&queue_cond);
+    pthread_mutex_unlock(&queue_mutex);
 
     return 0;
 }
@@ -159,6 +156,7 @@ int main(int argc, char* argv[]) {
     if (queue_size <= 0 || queue_size > MAX_QUEUE_SIZE) {
         queue_size = MAX_QUEUE_SIZE;
     }
+    shared->queue.capacity = queue_size;
 
     // Inicializar semáforos
     semaphores_t sems;
@@ -199,9 +197,8 @@ int main(int argc, char* argv[]) {
 
     if (threads_created != total_threads) {
         fprintf(stderr, "Erro a criar pool de workers\n");
-        for (int i = 0; i < threads_created; ++i) {
-            sem_post(sems.filled_slots);
-        }
+        keep_running = 0;
+        pthread_cond_broadcast(&queue_cond);
         for (int i = 0; i < threads_created; ++i) {
             pthread_join(threads[i], NULL);
         }
@@ -216,9 +213,7 @@ int main(int argc, char* argv[]) {
     if (listen_fd < 0) {
         perror("create_server_socket");
         keep_running = 0;
-        for (int i = 0; i < threads_created; ++i) {
-            sem_post(sems.filled_slots); // acordar threads antes de sair
-        }
+        pthread_cond_broadcast(&queue_cond);
         for (int i = 0; i < threads_created; ++i) {
             pthread_join(threads[i], NULL);
         }
@@ -256,10 +251,8 @@ int main(int argc, char* argv[]) {
     printf("Master: a terminar e limpar recursos..\n");
     keep_running = 0;
 
-    // Desbloquear threads que possam estar em sem_wait(filled_slots)
-    for (int i = 0; i < threads_created; ++i) {
-        sem_post(sems.filled_slots);
-    }
+    // Desbloquear threads que possam estar à espera na cond var
+    pthread_cond_broadcast(&queue_cond);
     for (int i = 0; i < threads_created; ++i) {
         pthread_join(threads[i], NULL);
     }

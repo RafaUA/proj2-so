@@ -2,6 +2,7 @@
 #define MASTER_H
 
 #include <signal.h>
+#include <pthread.h>
 #include "shared_mem.h"
 #include "semaphores.h"
 
@@ -10,6 +11,13 @@
  * quando se recebe um sinal (ex: SIGINT).
  */
 extern volatile sig_atomic_t keep_running;
+
+/**
+ * Mutex/cond para sincronizar o acesso à queue entre threads
+ * (implementação do thread pool).
+ */
+extern pthread_mutex_t queue_mutex;
+extern pthread_cond_t queue_cond;
 
 /**
  * Handler para sinais (tipicamente SIGINT).

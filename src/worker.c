@@ -9,39 +9,25 @@
 
 /**
  * Consumer: retira um client_fd da fila.
- *
- * Usa:
- *   - sem_wait(filled_slots)  -> espera até haver pelo menos 1 ligação
- *   - sem_wait(queue_mutex)   -> protege o acesso à queue
- *   - sem_post(queue_mutex)   -> liberta o acesso
- *   - sem_post(empty_slots)   -> informa que há mais um slot vazio
+ * Usa mutex + condvar (queue_mutex/queue_cond) para bloquear até haver trabalho.
  */
 int dequeue_connection(shared_data_t* data, semaphores_t* sems) {
+    (void)sems; // thread pool usa mutex/cond locais
+
     int client_fd;
 
-    // Esperar até haver pelo menos 1 item na fila
-    if (sem_wait(sems->filled_slots) == -1) {
-        // Se fomos interrompidos por sinal, deixamos o caller decidir o que fazer
-        if (errno == EINTR) {
-            return -1;
-        }
-
-        perror("sem_wait(filled_slots)");
+    if (pthread_mutex_lock(&queue_mutex) != 0) {
+        perror("pthread_mutex_lock(queue_mutex)");
         return -1;
     }
 
-    // Proteger acesso à fila
-    if (sem_wait(sems->queue_mutex) == -1) {
-        perror("sem_wait(queue_mutex)");
-
-        // Não mexemos na queue, por isso devolvemos o “filled_slots” para não corromper o estado
-        sem_post(sems->filled_slots);
-        return -1;
+    while (keep_running && data->queue.count == 0) {
+        // bloqueia até haver trabalho ou shutdown
+        pthread_cond_wait(&queue_cond, &queue_mutex);
     }
 
-    // Se fomos acordados para terminar, evitamos retirar um fd inválido
-    if (data->queue.count == 0) {
-        sem_post(sems->queue_mutex);
+    if (!keep_running) {
+        pthread_mutex_unlock(&queue_mutex);
         return -1;
     }
 
@@ -50,9 +36,7 @@ int dequeue_connection(shared_data_t* data, semaphores_t* sems) {
     data->queue.front = (data->queue.front + 1) % MAX_QUEUE_SIZE;       // O % MAX_QUEUE_SIZE garante wrap-around (quando chega ao fim do array volta ao início), de forma a obter uma fila circular.
     data->queue.count--;
 
-    // Libertar mutex e sinalizar que há mais um slot vazio
-    sem_post(sems->queue_mutex);
-    sem_post(sems->empty_slots);
+    pthread_mutex_unlock(&queue_mutex);
 
     return client_fd;
 }
