@@ -27,7 +27,7 @@ static void update_status_counter(server_stats_t* st, int status_code){
     case 500: st->status_500++; break;
     case 503: st->status_503++; break;
     default:
-        st->status_other++; // contabiliza outros códigos (3xx, 4xx/5xx não mapeados)
+        st->status_other++;     // contabiliza outros códigos (3xx, 4xx/5xx não mapeados)
         break;
     }
 }
@@ -105,6 +105,29 @@ int stats_record_503(shared_data_t* data,
 }
 
 
+int stats_cache_access(shared_data_t* data,
+                       semaphores_t* sems,
+                       int hit)
+{
+    if (!data || !sems) return -1;
+
+    if (safe_sem_wait(sems->stats_mutex) == -1)
+    {
+        perror("sem_wait(stats_mutex) in stats_cache_access");
+        return -1;
+    }
+
+    server_stats_t* st = &data->stats;
+
+    st->cache_lookups++;
+    if (hit) {
+        st->cache_hits++;
+    }
+    sem_post(sems->stats_mutex);
+    return 0;
+}
+
+
 void stats_print(shared_data_t* data, semaphores_t* sems, double uptime_seconds) {
     if (!data || !sems) return;
 
@@ -126,7 +149,12 @@ void stats_print(shared_data_t* data, semaphores_t* sems, double uptime_seconds)
     long successful_2xx = cpy.status_200;
     long client_4xx = cpy.status_404; // só 404 contado até agora
     long server_5xx = cpy.status_500 + cpy.status_503;
-    double cache_hit_rate = 0.0; // ainda não há cache implementado
+
+    // Cache Hits Rate (Porcentagem de buscas no cache que encontraram o arquivo em memória)
+    double cache_hit_rate = 0.0;
+    if (cpy.cache_lookups > 0) {
+        cache_hit_rate = ((double)cpy.cache_hits * 100.0) / (double)cpy.cache_lookups;
+    }
 
     printf("========================================\n");
     printf("SERVER STATISTICS\n");

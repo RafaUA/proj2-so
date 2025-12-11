@@ -13,6 +13,8 @@ typedef struct {
     long   status_other;            // outros códigos (3xx, 4xx, 5xx não mapeados)
     int    active_connections;      // nº de pedidos em processamento neste momento
     double total_response_time_sec; // soma dos tempos de resposta (segundos)
+    long   cache_hits;              // nº de vezes em que o ficheiro veio do cache
+    long   cache_lookups;          // nº total de tentativas de usar cache
 } server_stats_t;
 
 

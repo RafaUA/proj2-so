@@ -44,4 +44,14 @@ int stats_record_503(shared_data_t* data,
 void stats_print(shared_data_t* data, semaphores_t* sems, double uptime_seconds);
 
 
+/**
+ * Regista um acesso ao cache:
+ *  - incrementa cache_lookups
+ *  - se hit != 0, incrementa também cache_hits
+ */
+int stats_cache_access(shared_data_t* data,
+                       semaphores_t* sems,
+                       int hit);
+
+
 #endif /* STATS_H */

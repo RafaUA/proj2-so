@@ -17,7 +17,7 @@
 #include "config.h"
 #include "worker.h"
 #include "stats.h"
-
+#include "cache.h"
 
 volatile sig_atomic_t keep_running = 1;
 pthread_mutex_t queue_mutex = PTHREAD_MUTEX_INITIALIZER;
@@ -174,6 +174,14 @@ int main(int argc, char* argv[]) {
         return EXIT_FAILURE;
     }
 
+    // Inicializar cache de ficheiros (10MB por processo)
+    if (cache_init(CACHE_DEFAULT_MAX_BYTES) < 0) {
+        fprintf(stderr, "Erro a inicializar cache de ficheiros\n");
+        destroy_semaphores(&sems);
+        destroy_shared_memory(shared);
+        return EXIT_FAILURE;
+    }
+
     // Criar pool de worker threads (consumidores)
     int total_threads = config.num_workers * config.threads_per_worker;
     if (total_threads <= 0) total_threads = 1; // fallback seguro
@@ -231,7 +239,7 @@ int main(int argc, char* argv[]) {
         return EXIT_FAILURE;
     }
 
-    // Timeout curto para accept(), permitindo imprimir estatísticas periodicamente
+    // Timeout curto para accept(), que permite imprimir estatísticas periodicamente
     struct timeval tv;
     tv.tv_sec = 1;
     tv.tv_usec = 0;
@@ -294,6 +302,7 @@ int main(int argc, char* argv[]) {
     close(listen_fd);
     destroy_semaphores(&sems);
     destroy_shared_memory(shared);
+    cache_destroy();
 
     return EXIT_SUCCESS;
 }

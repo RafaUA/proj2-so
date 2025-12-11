@@ -92,7 +92,6 @@ static void handle_client_connection(int client_fd, worker_args_t* args) {
         bytes,
         response_time
     );
-
     close(client_fd);
 }
 
