@@ -25,16 +25,17 @@ int parse_http_request(const char* buffer, http_request_t* req) {
 
 void send_http_response(int client_fd, int status_code, const char* status_msg,
     const char* content_type, const char* body, size_t 
-    body_len) {
+    body_len, int keep_alive) {
     char header[2048];
     int header_len = snprintf(header, sizeof(header),
         "HTTP/1.1 %d %s\r\n"
         "Content-Type: %s\r\n"
         "Content-Length: %zu\r\n"
         "Server: ConcurrentHTTP/1.0\r\n"
-        "Connection: close\r\n"
+        "Connection: %s\r\n"
         "\r\n",
-        status_code, status_msg, content_type, body_len);
+        status_code, status_msg, content_type, body_len,
+        keep_alive ? "keep-alive" : "close");
 
     send(client_fd, header, header_len, 0);
 

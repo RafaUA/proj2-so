@@ -5,6 +5,8 @@
 #include <time.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <sys/time.h>
+#include <ctype.h>
 
 #include "stats.h"
 #include "worker.h"
@@ -98,6 +100,20 @@ static ssize_t recv_http_request(int client_fd, char* buf, size_t buf_size) {
     return (ssize_t)total;
 }
 
+// procura substring case-insensitive simples
+static int contains_ci(const char* haystack, const char* needle) {
+    if (!haystack || !needle) return 0;
+    size_t nlen = strlen(needle);
+    for (const char* p = haystack; *p; ++p) {
+        size_t i = 0;
+        while (p[i] && i < nlen && tolower((unsigned char)p[i]) == tolower((unsigned char)needle[i])) {
+            i++;
+        }
+        if (i == nlen) return 1;
+    }
+    return 0;
+}
+
 /**
  * Constrói o caminho completo do ficheiro a servir, baseado na raiz do documento e no caminho do pedido HTTP.
  * Exemplo: raiz = "www", pedido = "/index.html" -> resultado = "www/index.html"
@@ -137,109 +153,137 @@ static int build_full_path(const worker_args_t* args, const char* req_path, char
 }
 
 static void handle_client_connection(int client_fd, worker_args_t* args) {
-    // sleep(5);    // Simula atraso no processamento, para testes de fila cheia (503)
-    // Início da medição do tempo de resposta
-    double start_time = now_monotonic_sec();
-    // Regista pedido em processamento
-    stats_request_start(args->shared, args->sems);
+    // Configurar timeout de socket por ligação (aplica-se a cada recv)
+    // Evita que uma thread fique eternamente à espera de um novo request da mesma ligação
+    int timeout_sec = (args->config && args->config->timeout_seconds > 0) ? args->config->timeout_seconds : 30;
+    struct timeval tv = {.tv_sec = timeout_sec, .tv_usec = 0};
+    setsockopt(client_fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 
-    // Valores por omissão para o resultado do handler
-    int status_code = 500;
-    size_t bytes_sent = 0;
-    char* file_data = NULL;
-    size_t file_size = 0;
-    int from_cache = 0;
-    int cache_hit = 0;
-    int request_ok = 0; // 1 se parse GET válido
+    int keep_alive = 1;
 
-    // Buffer para armazenar o pedido HTTP recebido
-    char req_buf[8192];
-    // Lê o pedido do socket até encontrar o fim dos headers
-    ssize_t rlen = recv_http_request(client_fd, req_buf, sizeof(req_buf));
-    if (rlen < 0) {
-        // Pedido inválido -> responde 400
-        const char* body = "<html><body><h1>400 Bad Request</h1></body></html>";
-        bytes_sent = strlen(body);
-        status_code = 400;
-        send_http_response(client_fd, status_code, "Bad Request", "text/html", body, bytes_sent);
-        goto finish;
-    }
+    while (keep_running && keep_alive) {
+        // Buffer para armazenar o pedido HTTP recebido
+        char req_buf[8192]; // 8KB deve ser suficiente para headers
+        // Lê o pedido do socket até encontrar o fim dos headers
+        ssize_t rlen = recv_http_request(client_fd, req_buf, sizeof(req_buf));
+        if (rlen <= 0) {
+            // Cliente fechou ou erro de leitura -> terminar ligação sem contabilizar novo pedido
+            break;
+        }
 
-    // Estrutura para guardar método, caminho e versão
-    http_request_t req;
-    // Só aceitamos pedidos GET bem formatados
-    if (parse_http_request(req_buf, &req) < 0) {
-        const char* body = "<html><body><h1>400 Bad Request</h1></body></html>";
-        bytes_sent = strlen(body);
-        status_code = 400;
-        send_http_response(client_fd, status_code, "Bad Request", "text/html", body, bytes_sent);
-        goto finish;
-    }
-    request_ok = 1;
-    if (strcmp(req.method, "GET") != 0) {
-        const char* body = "<html><body><h1>405 Method Not Allowed</h1></body></html>";
-        bytes_sent = strlen(body);
-        status_code = 405;
-        send_http_response(client_fd, status_code, "Method Not Allowed", "text/html", body, bytes_sent);
-        goto finish;
-    }
+        double start_time = now_monotonic_sec();
 
-    // Construir o caminho absoluto do ficheiro a servir
-    char full_path[1024];
-    if (build_full_path(args, req.path, full_path, sizeof(full_path)) != 0) {
-        const char* body = "<html><body><h1>400 Bad Request</h1></body></html>";
-        bytes_sent = strlen(body);
-        status_code = 400;
-        send_http_response(client_fd, status_code, "Bad Request", "text/html", body, bytes_sent);
-        goto finish;
-    }
+        // Regista pedido em processamento (um por request)
+        stats_request_start(args->shared, args->sems);
 
-    // Tenta obter o ficheiro do cache; se não existir, lê do disco e insere se couber
-    if (cache_get_file(full_path, &file_data, &file_size, &from_cache, &cache_hit) != 0) {
-        stats_cache_access(args->shared, args->sems, 0); // miss
-        const char* body = "<html><body><h1>404 Not Found</h1></body></html>";
-        bytes_sent = strlen(body);
-        status_code = 404;
-        send_http_response(client_fd, status_code, "Not Found", "text/html", body, bytes_sent);
-        goto finish;
-    }
+        // Valores por omissão para o resultado do handler
+        int status_code = 500;
+        size_t bytes_sent = 0;
+        char* file_data = NULL;
+        size_t file_size = 0;
+        int from_cache = 0;
+        int cache_hit = 0;
+        int request_ok = 0; // 1 se parse GET válido
 
-    // Contabilizar hit/miss de cache
-    stats_cache_access(args->shared, args->sems, cache_hit);
+        // Estrutura para guardar método, caminho e versão
+        http_request_t req;
+        // Só aceitamos pedidos GET bem formatados
+        if (parse_http_request(req_buf, &req) < 0) {
+            const char* body = "<html><body><h1>400 Bad Request</h1></body></html>";
+            bytes_sent = strlen(body);
+            status_code = 400;
+            keep_alive = 0;
+            send_http_response(client_fd, status_code, "Bad Request", "text/html", body, bytes_sent, keep_alive);
+            goto finish_request;
+        }
+        request_ok = 1;
 
-    // Envia o conteúdo do ficheiro ao cliente (usa buffer do cache ou lido do disco)
-    send_http_response(
-        client_fd,
-        200, "OK",
-        "application/octet-stream",
-        file_data,
-        file_size
-    );
-    status_code = 200;
-    bytes_sent = file_size;
+        // Determinar se a conexão fica aberta
+        int want_close = 0;
+        if (contains_ci(req_buf, "connection: close")) {
+            want_close = 1;
+        } else if (contains_ci(req_buf, "connection: keep-alive")) {
+            want_close = 0;
+        } else {
+            if (strcmp(req.version, "HTTP/1.0") == 0) {     // HTTP/1.0 fecha por omissão
+                want_close = 1;
+            }
+        }
+        keep_alive = want_close ? 0 : 1;
 
-finish:
-    {
-        // Calcula tempo total de resposta e regista stats
-        double response_time = now_monotonic_sec() - start_time;
-        stats_request_end(
-            args->shared,
-            args->sems,
-            status_code,
-            bytes_sent,
-            response_time
+        if (strcmp(req.method, "GET") != 0) {
+            const char* body = "<html><body><h1>405 Method Not Allowed</h1></body></html>";
+            bytes_sent = strlen(body);
+            status_code = 405;
+            keep_alive = 0; // métodos não suportados: fechamos
+            send_http_response(client_fd, status_code, "Method Not Allowed", "text/html", body, bytes_sent, keep_alive);
+            goto finish_request;
+        }
+
+        // Construir o caminho absoluto do ficheiro a servir
+        char full_path[1024];
+        if (build_full_path(args, req.path, full_path, sizeof(full_path)) != 0) {
+            const char* body = "<html><body><h1>400 Bad Request</h1></body></html>";
+            bytes_sent = strlen(body);
+            status_code = 400;
+            keep_alive = 0;
+            send_http_response(client_fd, status_code, "Bad Request", "text/html", body, bytes_sent, keep_alive);
+            goto finish_request;
+        }
+
+        // Tenta obter o ficheiro do cache; se não existir, lê do disco e insere se couber
+        if (cache_get_file(full_path, &file_data, &file_size, &from_cache, &cache_hit) != 0) {
+            stats_cache_access(args->shared, args->sems, 0); // miss
+            const char* body = "<html><body><h1>404 Not Found</h1></body></html>";
+            bytes_sent = strlen(body);
+            status_code = 404;
+            keep_alive = 0; // fechamos em erro
+            send_http_response(client_fd, status_code, "Not Found", "text/html", body, bytes_sent, keep_alive);
+            goto finish_request;
+        }
+
+        // Contabilizar hit/miss de cache
+        stats_cache_access(args->shared, args->sems, cache_hit);
+
+        // Envia o conteúdo do ficheiro ao cliente (usa buffer do cache ou lido do disco)
+        send_http_response(
+            client_fd,
+            200, "OK",
+            "application/octet-stream",
+            file_data,
+            file_size,
+            keep_alive
         );
-    }
+        status_code = 200;
+        bytes_sent = file_size;
 
-    // Logging em formato combinado simples
-    const char* log_method = request_ok ? req.method : "-";
-    const char* log_path   = request_ok ? req.path   : "-";
-    const char* log_ver    = request_ok ? req.version: "HTTP/1.1";
-    logger_log_request(client_fd, log_method, log_path, log_ver, status_code, bytes_sent);
+finish_request:
+        {
+            // Calcula tempo total de resposta e regista stats
+            double response_time = now_monotonic_sec() - start_time;
+            stats_request_end(
+                args->shared,
+                args->sems,
+                status_code,
+                bytes_sent,
+                response_time
+            );
+        }
 
-    // Se não veio do cache, libertar o buffer alocado pelo disco
-    if (!from_cache && file_data) {
-        free(file_data);
+        // Logging em formato combinado simples
+        const char* log_method = request_ok ? req.method : "-";
+        const char* log_path   = request_ok ? req.path   : "-";
+        const char* log_ver    = request_ok ? req.version: "HTTP/1.1";
+        logger_log_request(client_fd, log_method, log_path, log_ver, status_code, bytes_sent);
+
+        // Se não veio do cache, libertar o buffer alocado pelo disco
+        if (!from_cache && file_data) {
+            free(file_data);
+        }
+
+        if (!keep_alive) {
+            break;
+        }
     }
 
     // Fecha a ligação ao cliente

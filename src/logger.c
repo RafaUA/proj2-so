@@ -169,7 +169,7 @@ void logger_log_request(int client_fd,
     if (!g_initialized || !g_sems) return;
 
     /* Proteger todo o bloco com o semáforo de log */
-    SEM_WAIT_SAFE(&g_sems->log_mutex);
+    SEM_WAIT_SAFE(g_sems->log_mutex);
 
     char ip[64];
     get_client_ip(client_fd, ip, sizeof(ip));
@@ -190,7 +190,7 @@ void logger_log_request(int client_fd,
 
     // Se snprintf falhar ou a entrada for demasiado grande, para aqui
     if (n <= 0) {
-        sem_post(&g_sems->log_mutex);
+        sem_post(g_sems->log_mutex);
         return;
     }
 
@@ -211,7 +211,7 @@ void logger_log_request(int client_fd,
             fflush(g_log_fp);
         }
     } else {
-        // se a entrada cabe no espaço livre atual do buffer
+        // se a entrada não couber no buffer, faz flush primeiro
         if (g_buffer_len + entry_len > sizeof(g_buffer)) {
             logger_flush_unlocked();
         }
@@ -226,20 +226,20 @@ void logger_log_request(int client_fd,
         }
     }
 
-    sem_post(&g_sems->log_mutex);
+    sem_post(g_sems->log_mutex);
 }
 
 
 void logger_shutdown(void) {
     if (!g_initialized) return;
 
-    SEM_WAIT_SAFE(&g_sems->log_mutex);
+    SEM_WAIT_SAFE(g_sems->log_mutex);
     logger_flush_unlocked();
     if (g_log_fp) {
         fclose(g_log_fp);
         g_log_fp = NULL;
     }
-    sem_post(&g_sems->log_mutex);
+    sem_post(g_sems->log_mutex);
 
     g_initialized = 0;
 }

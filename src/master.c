@@ -76,7 +76,8 @@ static void send_503_response(int client_fd, shared_data_t* data, semaphores_t* 
         503, "Service Unavailable",
         "text/html",
         body,
-        body_len
+        body_len,
+        0
     );
 
     // Registar bytes transferidos para este 503 (contamos só o body)
@@ -163,6 +164,8 @@ int main(int argc, char* argv[]) {
     sigemptyset(&sa.sa_mask);
     sa.sa_flags = 0;
     sigaction(SIGINT, &sa, NULL);
+    // Ignorar SIGPIPE para evitar terminar processo ao escrever em sockets fechados
+    signal(SIGPIPE, SIG_IGN);
 
     // Criar memória partilhada
     shared_data_t* shared = create_shared_memory();
