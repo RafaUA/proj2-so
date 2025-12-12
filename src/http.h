@@ -15,7 +15,24 @@ typedef struct {
     char version[MAX_VERSION_LEN];
 } http_request_t;
 
+typedef struct {
+    int has_range;
+    long start;
+    long end;
+    int is_suffix_range;
+} range_request_t;
+
 int parse_http_request(const char* buffer, http_request_t* req);
+
+int parse_range_header(const char* range_value, range_request_t* range, size_t file_size);
+
+void send_http_response_range(int client_fd,
+                               const char* content_type,
+                               const char* body,
+                               size_t total_size,
+                               long range_start,
+                               long range_end,
+                               int keep_alive);
 
 void send_http_response(int client_fd,
                         int status_code,

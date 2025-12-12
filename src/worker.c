@@ -27,7 +27,7 @@ int dequeue_connection(shared_data_t* data, semaphores_t* sems) {
         if (errno == EINTR) {
             if (!keep_running) return -1;
             continue;
-        }
+        }   
         perror("sem_wait(filled_slots)");
         return -1;
     }
@@ -245,17 +245,76 @@ static void handle_client_connection(int client_fd, worker_args_t* args) {
         // Contabilizar hit/miss de cache
         stats_cache_access(args->shared, args->sems, cache_hit);
 
-        // Envia o conteúdo do ficheiro ao cliente (usa buffer do cache ou lido do disco)
-        send_http_response(
-            client_fd,
-            200, "OK",
-            "application/octet-stream",
-            file_data,
-            file_size,
-            keep_alive
-        );
-        status_code = 200;
-        bytes_sent = file_size;
+        // Detectar e processar Range header
+        static __thread char range_value[256];
+        range_request_t range;
+        int has_range_header = 0;
+
+        // Procurar header "Range:" no pedido
+        const char* range_start = strstr(req_buf, "Range:");
+        if (!range_start) {
+            range_start = strstr(req_buf, "range:");
+        }
+
+        if (range_start) {
+            // Encontrar o fim da linha do header
+            const char* range_end = strstr(range_start, "\r\n");
+            if (range_end) {
+                // Extrair valor após "Range: " ou "range: "
+                const char* value_start = strchr(range_start, ':');
+                if (value_start) {
+                    value_start++;
+                    while (*value_start == ' ') value_start++;
+
+                    size_t value_len = range_end - value_start;
+                    if (value_len < sizeof(range_value)) {
+                        strncpy(range_value, value_start, value_len);
+                        range_value[value_len] = '\0';
+                        has_range_header = 1;
+                    }
+                }
+            }
+        }
+
+        if (has_range_header) {
+            // Validar o range
+            if (parse_range_header(range_value, &range, file_size) == 0 && range.has_range) {
+                // Range válido - enviar 206 Partial Content
+                send_http_response_range(
+                    client_fd,
+                    "application/octet-stream",
+                    file_data,
+                    file_size,
+                    range.start,
+                    range.end,
+                    keep_alive
+                );
+                status_code = 206;
+                bytes_sent = range.end - range.start + 1;
+            } else {
+                // Range inválido - enviar 416 Range Not Satisfiable
+                char error_body[256];
+                int error_len = snprintf(error_body, sizeof(error_body),
+                    "<html><body><h1>416 Range Not Satisfiable</h1></body></html>");
+                bytes_sent = error_len;
+                status_code = 416;
+                keep_alive = 0;
+                send_http_response(client_fd, status_code, "Range Not Satisfiable",
+                    "text/html", error_body, bytes_sent, keep_alive);
+            }
+        } else {
+            // Sem Range header - comportamento normal
+            send_http_response(
+                client_fd,
+                200, "OK",
+                "application/octet-stream",
+                file_data,
+                file_size,
+                keep_alive
+            );
+            status_code = 200;
+            bytes_sent = file_size;
+        }
 
 finish_request:
         {
