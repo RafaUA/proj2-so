@@ -146,6 +146,7 @@ static void handle_client_connection(int client_fd, worker_args_t* args) {
     size_t file_size = 0;
     int from_cache = 0;
     int cache_hit = 0;
+    int request_ok = 0; // 1 se parse GET válido
 
     // Buffer para armazenar o pedido HTTP recebido
     char req_buf[8192];
@@ -163,7 +164,15 @@ static void handle_client_connection(int client_fd, worker_args_t* args) {
     // Estrutura para guardar método, caminho e versão
     http_request_t req;
     // Só aceitamos pedidos GET bem formatados
-    if (parse_http_request(req_buf, &req) < 0 || strcmp(req.method, "GET") != 0) {
+    if (parse_http_request(req_buf, &req) < 0) {
+        const char* body = "<html><body><h1>400 Bad Request</h1></body></html>";
+        bytes_sent = strlen(body);
+        status_code = 400;
+        send_http_response(client_fd, status_code, "Bad Request", "text/html", body, bytes_sent);
+        goto finish;
+    }
+    request_ok = 1;
+    if (strcmp(req.method, "GET") != 0) {
         const char* body = "<html><body><h1>405 Method Not Allowed</h1></body></html>";
         bytes_sent = strlen(body);
         status_code = 405;
@@ -216,9 +225,13 @@ finish:
             bytes_sent,
             response_time
         );
-
-        
     }
+
+    // Logging em formato combinado simples
+    const char* log_method = request_ok ? req.method : "-";
+    const char* log_path   = request_ok ? req.path   : "-";
+    const char* log_ver    = request_ok ? req.version: "HTTP/1.1";
+    logger_log_request(client_fd, log_method, log_path, log_ver, status_code, bytes_sent);
 
     // Se não veio do cache, libertar o buffer alocado pelo disco
     if (!from_cache && file_data) {

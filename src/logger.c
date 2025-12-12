@@ -22,6 +22,26 @@ static size_t         g_file_size  = 0;             // tamanho atual do ficheiro
 static semaphores_t*  g_sems = NULL;                // semáforos usados
 static int            g_initialized = 0;            // se o logger foi inicializado
 
+#define SEM_WAIT_SAFE(sem_ptr)                         \
+    do {                                               \
+        int _r;                                        \
+        while ((_r = sem_wait((sem_ptr))) == -1 && errno == EINTR) { \
+        }                                              \
+        if (_r == -1) {                                \
+            return;                                    \
+        }                                              \
+    } while (0)
+
+#define SEM_WAIT_SAFE_RET(sem_ptr, retval)             \
+    do {                                               \
+        int _r;                                        \
+        while ((_r = sem_wait((sem_ptr))) == -1 && errno == EINTR) { \
+        }                                              \
+        if (_r == -1) {                                \
+            return (retval);                           \
+        }                                              \
+    } while (0)
+
 
 /* Função auxiliar: flush do buffer para o disco (sem mexer no semáforo). */
 static void logger_flush_unlocked(void) {
@@ -149,10 +169,7 @@ void logger_log_request(int client_fd,
     if (!g_initialized || !g_sems) return;
 
     /* Proteger todo o bloco com o semáforo de log */
-    if (sem_wait(&g_sems->log_mutex) == -1) {
-        perror("logger_log_request: sem_wait(log_mutex)");
-        return;
-    }
+    SEM_WAIT_SAFE(g_sems->log_mutex);
 
     char ip[64];
     get_client_ip(client_fd, ip, sizeof(ip));
@@ -180,7 +197,7 @@ void logger_log_request(int client_fd,
     size_t entry_len = (size_t)n;
 
     /* Rodar o log se exceder 10MB (considerando o buffer + entrada) */
-    if (g_file_size + g_buffer_len + entry_len > LOG_ROTATE_SIZE) {
+    if (g_file_size + g_buffer_len + entry_len >= LOG_ROTATE_SIZE) {
         logger_rotate_unlocked();
     }
 
@@ -209,21 +226,20 @@ void logger_log_request(int client_fd,
         }
     }
 
-    sem_post(&g_sems->log_mutex);
+    sem_post(g_sems->log_mutex);
 }
 
 
 void logger_shutdown(void) {
     if (!g_initialized) return;
 
-    if (sem_wait(&g_sems->log_mutex) == 0) {
-        logger_flush_unlocked();
-        if (g_log_fp) {
-            fclose(g_log_fp);
-            g_log_fp = NULL;
-        }
-        sem_post(&g_sems->log_mutex);
+    SEM_WAIT_SAFE(g_sems->log_mutex);
+    logger_flush_unlocked();
+    if (g_log_fp) {
+        fclose(g_log_fp);
+        g_log_fp = NULL;
     }
+    sem_post(g_sems->log_mutex);
 
     g_initialized = 0;
 }
