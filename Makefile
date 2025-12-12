@@ -35,8 +35,8 @@ $(SRC_DIR)/%.o: $(SRC_DIR)/%.c
 	$(CC) $(CFLAGS) -c $< -o $@
 
 # Binário de teste de concorrência
-tests/test_concurrent: tests/test_concurrent.c
-	$(CC) -Wall -Wextra -std=c11 -g -pthread -o $@ $<
+tests/test_concurrent: tests/test_concurrent.c webserver
+	$(CC) -Wall -Wextra -std=c11 -O2 -pthread -o $@ $<
 
 # Limpar objetos e binário
 clean:
@@ -57,8 +57,26 @@ helgrind: $(TARGET)
 	valgrind --tool=helgrind ./$(TARGET) -c server.conf
 
 test: $(TARGET) tests/test_concurrent
-	chmod +x tests/test_load.sh
+	chmod +x tests/test_load.sh tests/test_sync.sh tests/test_stress.sh
 	./tests/test_load.sh
+
+test-sync: $(TARGET) tests/test_concurrent
+	chmod +x tests/test_sync.sh
+	./tests/test_sync.sh
+
+test-stress: $(TARGET) tests/test_concurrent
+	chmod +x tests/test_stress.sh
+	./tests/test_stress.sh
+
+test-all: $(TARGET) tests/test_concurrent
+	chmod +x tests/test_load.sh tests/test_sync.sh tests/test_stress.sh
+	@echo "=== Running All Tests ==="
+	@echo
+	./tests/test_load.sh
+	@echo
+	./tests/test_sync.sh
+	@echo
+	@echo "=== Skipping stress tests (use 'make test-stress' to run) ==="
 
 perf: $(TARGET)
 	chmod +x tests/test_load.sh
