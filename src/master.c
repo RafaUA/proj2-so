@@ -82,6 +82,9 @@ static void send_503_response(int client_fd, shared_data_t* data, semaphores_t* 
     if (data && sems) {
         stats_record_503(data, sems, body_len);
     }
+
+    // Log request com placeholders (sem método/path reais)
+    logger_log_request(client_fd, "-", "-", "HTTP/1.1", 503, body_len);
 }
 
 
