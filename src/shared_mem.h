@@ -7,7 +7,9 @@ typedef struct {
     long   bytes_transferred;       // bytes do corpo (body) enviados
     long   timed_requests;          // pedidos com tempo medido
     long   status_200;              // contagem de respostas 200
+    long   status_400;              // contagem de respostas 400
     long   status_404;              // contagem de respostas 404
+    long   status_405;              // contagem de respostas 405
     long   status_500;              // contagem de respostas 500
     long   status_503;              // contagem de respostas 503 (queue cheia, etc.)
     long   status_other;            // outros códigos (3xx, 4xx, 5xx não mapeados)

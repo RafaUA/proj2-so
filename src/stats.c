@@ -23,7 +23,9 @@ static void update_status_counter(server_stats_t* st, int status_code){
     switch (status_code)
     {
     case 200: st->status_200++; break;
+    case 400: st->status_400++; break;
     case 404: st->status_404++; break;
+    case 405: st->status_405++; break;
     case 500: st->status_500++; break;
     case 503: st->status_503++; break;
     default:
@@ -147,7 +149,7 @@ void stats_print(shared_data_t* data, semaphores_t* sems, double uptime_seconds)
     }
 
     long successful_2xx = cpy.status_200;
-    long client_4xx = cpy.status_404; // só 404 contado até agora
+    long client_4xx = cpy.status_400 + cpy.status_404 + cpy.status_405;
     long server_5xx = cpy.status_500 + cpy.status_503;
 
     // Cache Hits Rate (Porcentagem de buscas no cache que encontraram o arquivo em memória)

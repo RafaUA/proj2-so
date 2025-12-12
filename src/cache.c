@@ -1,3 +1,5 @@
+#define _XOPEN_SOURCE 700  // expõe pthread rwlocks e outras POSIX funções
+
 #include <stdio.h>
 #include <pthread.h>
 #include <stdlib.h>
@@ -25,6 +27,16 @@ static size_t g_max_bytes = CACHE_DEFAULT_MAX_BYTES;            // limite máxim
 static pthread_rwlock_t g_lock = PTHREAD_RWLOCK_INITIALIZER;    // lock para proteger o acesso ao cache
 static int g_initialized = 0;                                   // indica se o cache foi inicializado
 
+// Pequena implementação de strdup para evitar warnings/portabilidade
+static char* xstrdup(const char* s) {
+    if (!s) return NULL;
+    size_t len = strlen(s) + 1;
+    char* copy = malloc(len);
+    if (!copy) return NULL;
+    memcpy(copy, s, len);
+    return copy;
+}
+
 
 static void lru_move_to_front(cache_entry_t* e) {
     if (!e || g_head == e){
@@ -46,7 +58,7 @@ static void lru_move_to_front(cache_entry_t* e) {
     e->prev = NULL;
     e->next = g_head;
     if (g_head) {
-        g-head->prev = e;
+        g_head->prev = e;
     }
     g_head = e;
     if (!g_tail) {
@@ -55,7 +67,7 @@ static void lru_move_to_front(cache_entry_t* e) {
 }
 
 
-static void lru_insert_to_front(cache_entry_t* e) {
+static void lru_insert_front(cache_entry_t* e) {
     e->prev = NULL;
     e->next = g_head;
     if (g_head) {
@@ -94,7 +106,11 @@ static void lru_evict_tail(void) {
     cache_entry_t* tail = g_tail;
 
     lru_remove_entry(tail);
-    g_total_bytes -= tail->size;
+    if (g_total_bytes >= tail->size) {
+        g_total_bytes -= tail->size;
+    } else {
+        g_total_bytes = 0;
+    }
 
     free(tail->path);
     free(tail->data);
@@ -210,7 +226,7 @@ static int read_file_fully(const char* full_path, char** buf_out, size_t* size_o
 
 
 int cache_init(long max_bytes) {
-    if (g_max_bytes > 0) {
+    if (max_bytes > 0) {
         g_max_bytes = (size_t)max_bytes;
     } else {
         g_max_bytes = CACHE_DEFAULT_MAX_BYTES;
@@ -272,18 +288,24 @@ int cache_get_file(const char* full_path,
     /* Tenta encontrar a entrada com lock de leitura (múltiplos leitores permitidos) */
     pthread_rwlock_rdlock(&g_lock);
     cache_entry_t* e = find_entry(full_path);
-    if (e) {
-        /* Hit: devolvemos o buffer já em memória (não duplicamos) */
-        *data_out = e->data;
-        *size_out = e->size;
-        if (from_cache_out) *from_cache_out = 1;  // veio do cache
-        if (is_hit_out) *is_hit_out = 1;          // hit
-
-        pthread_rwlock_unlock(&g_lock);
-        return 0;
-    }
-    /* Não encontrou -> libertar o rdlock e seguir para leitura do disco */
     pthread_rwlock_unlock(&g_lock);
+
+    if (e) {
+        /* Upgrade para WRLOCK para atualizar LRU com segurança */
+        pthread_rwlock_wrlock(&g_lock);
+        cache_entry_t* again = find_entry(full_path);
+        if (again) {
+            lru_move_to_front(again);
+            *data_out = again->data;
+            *size_out = again->size;
+            if (from_cache_out) *from_cache_out = 1;  // veio do cache
+            if (is_hit_out) *is_hit_out = 1;          // hit
+            pthread_rwlock_unlock(&g_lock);
+            return 0;
+        }
+        pthread_rwlock_unlock(&g_lock);
+        /* Se chegou aqui, a entrada foi removida entre locks -> tratar como miss */
+    }
 
     /* Miss: ler o ficheiro do disco sem segurar o lock do cache (evita bloquear leitores) */
     char* buf = NULL;
@@ -326,6 +348,15 @@ int cache_get_file(const char* full_path,
         lru_evict_tail();
     }
 
+    /* Se mesmo após evicções o ficheiro não cabe, devolvemos sem o colocar em cache */
+    if (fsize > g_max_bytes) {
+        pthread_rwlock_unlock(&g_lock);
+        *data_out = buf;
+        *size_out = fsize;
+        if (from_cache_out) *from_cache_out = 0;
+        return 0;
+    }
+
     /* Criar nova entrada de cache com os dados lidos */
     cache_entry_t* new_e = malloc(sizeof(cache_entry_t));
     if (!new_e) {
@@ -334,7 +365,7 @@ int cache_get_file(const char* full_path,
         return -1;
     }
 
-    new_e->path = strdup(full_path); // copia do caminho (para uso futuro / free)
+    new_e->path = xstrdup(full_path); // copia do caminho (para uso futuro / free)
     if (!new_e->path) {
         free(new_e);
         pthread_rwlock_unlock(&g_lock);
