@@ -21,8 +21,6 @@
 #include "logger.h"
 
 volatile sig_atomic_t keep_running = 1;
-pthread_mutex_t queue_mutex = PTHREAD_MUTEX_INITIALIZER;
-pthread_cond_t queue_cond = PTHREAD_COND_INITIALIZER;
 
 void signal_handler(int signum) {
     (void)signum; // sinal usado apenas para terminar o loop principal
@@ -90,12 +88,27 @@ static void send_503_response(int client_fd, shared_data_t* data, semaphores_t* 
 
 /*
  * Produtor: tenta colocar um client_fd na fila.
- * Usa mutex/cond para proteger queue e sinalizar consumidores.
+ * Usa semáforos (empty_slots, filled_slots, queue_mutex) como bounded buffer.
  * Retorna 0 em sucesso, -1 se falhar (já trata do socket).
  */
 int enqueue_connection(shared_data_t* data, semaphores_t* sems, int client_fd) {
-    if (pthread_mutex_lock(&queue_mutex) != 0) {
-        perror("pthread_mutex_lock(queue_mutex)");
+    // Tentar reservar slot livre sem bloquear indefinidamente
+    if (sem_trywait(sems->empty_slots) == -1) {
+        if (errno == EAGAIN) {
+            send_503_response(client_fd, data, sems);
+            close(client_fd);
+            return -1;
+        } else {
+            perror("sem_trywait(empty_slots)");
+            send_503_response(client_fd, data, sems);
+            close(client_fd);
+            return -1;
+        }
+    }
+
+    if (sem_wait(sems->queue_mutex) == -1) {
+        perror("sem_wait(queue_mutex)");
+        sem_post(sems->empty_slots); // devolve slot
         send_503_response(client_fd, data, sems);
         close(client_fd);
         return -1;
@@ -106,22 +119,20 @@ int enqueue_connection(shared_data_t* data, semaphores_t* sems, int client_fd) {
                  : MAX_QUEUE_SIZE;
 
     if (data->queue.count >= capacity) {
-        // Fila cheia -> responde 503, regista estatística e fecha
-        pthread_mutex_unlock(&queue_mutex);
+        // Defesa adicional
+        sem_post(sems->queue_mutex);
+        sem_post(sems->empty_slots);
         send_503_response(client_fd, data, sems);
         close(client_fd);
         return -1;
     }
 
-    // Inserir na fila circular (rear)
     data->queue.sockets[data->queue.rear] = client_fd;
     data->queue.rear = (data->queue.rear + 1) % MAX_QUEUE_SIZE;
     data->queue.count++;
 
-    // Libertar mutex e sinalizar que há mais um item
-    pthread_cond_signal(&queue_cond);
-    pthread_mutex_unlock(&queue_mutex);
-
+    sem_post(sems->queue_mutex);
+    sem_post(sems->filled_slots);
     return 0;
 }
 
@@ -175,8 +186,10 @@ int main(int argc, char* argv[]) {
         return EXIT_FAILURE;
     }
 
-    // Inicializar cache de ficheiros (10MB por processo)
-    if (cache_init(CACHE_DEFAULT_MAX_BYTES) < 0) {
+    // Inicializar cache de ficheiros com tamanho da config (MB -> bytes)
+    long cache_bytes = (config.cache_size_mb > 0) ? (long)config.cache_size_mb * 1024L * 1024L
+                                                  : CACHE_DEFAULT_MAX_BYTES;
+    if (cache_init(cache_bytes) < 0) {
         fprintf(stderr, "Erro a inicializar cache de ficheiros\n");
         destroy_semaphores(&sems);
         destroy_shared_memory(shared);
@@ -188,7 +201,7 @@ int main(int argc, char* argv[]) {
         fprintf(stderr, "Erro a inicializar logger\n");
         destroy_semaphores(&sems);
         destroy_shared_memory(shared);
-        close(listen_fd);
+        cache_destroy();
         return EXIT_FAILURE;
     }
 
@@ -199,6 +212,8 @@ int main(int argc, char* argv[]) {
     pthread_t* threads = calloc(total_threads, sizeof(pthread_t));
     if (!threads) {
         perror("calloc threads");
+        logger_shutdown();
+        cache_destroy();
         destroy_semaphores(&sems);
         destroy_shared_memory(shared);
         return EXIT_FAILURE;
@@ -224,11 +239,12 @@ int main(int argc, char* argv[]) {
     if (threads_created != total_threads) {
         fprintf(stderr, "Erro a criar pool de workers\n");
         keep_running = 0;
-        pthread_cond_broadcast(&queue_cond);
         for (int i = 0; i < threads_created; ++i) {
             pthread_join(threads[i], NULL);
         }
         free(threads);
+        logger_shutdown();
+        cache_destroy();
         destroy_semaphores(&sems);
         destroy_shared_memory(shared);
         return EXIT_FAILURE;
@@ -239,21 +255,21 @@ int main(int argc, char* argv[]) {
     if (listen_fd < 0) {
         perror("create_server_socket");
         keep_running = 0;
-        pthread_cond_broadcast(&queue_cond);
         for (int i = 0; i < threads_created; ++i) {
             pthread_join(threads[i], NULL);
         }
         free(threads);
+        logger_shutdown();
+        cache_destroy();
         destroy_semaphores(&sems);
         destroy_shared_memory(shared);
         return EXIT_FAILURE;
     }
 
-    // Timeout curto para accept(), que permite imprimir estatísticas periodicamente
+    // Timeout configurável para accept() (TIMEOUT_SECONDS) para evitar bloqueio indefinido
     struct timeval tv;
-    tv.tv_sec = 1;
+    tv.tv_sec = (config.timeout_seconds > 0) ? config.timeout_seconds : 1;
     tv.tv_usec = 0;
-    // 
     if (setsockopt(listen_fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) < 0) {
         perror("setsockopt(SO_RCVTIMEO)");
     }
@@ -298,8 +314,10 @@ int main(int argc, char* argv[]) {
     printf("Master: a terminar e limpar recursos..\n");
     keep_running = 0;
 
-    // Desbloquear threads que possam estar à espera na cond var
-    pthread_cond_broadcast(&queue_cond);
+    // Desbloquear threads que possam estar em sem_wait(filled_slots)
+    for (int i = 0; i < threads_created; ++i) {
+        sem_post(sems.filled_slots);
+    }
     for (int i = 0; i < threads_created; ++i) {
         pthread_join(threads[i], NULL);
     }

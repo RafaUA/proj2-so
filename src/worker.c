@@ -15,35 +15,39 @@
 
 
 /**
- * Consumer: retira um client_fd da fila.
- * Usa mutex + condvar (queue_mutex/queue_cond) para bloquear até haver trabalho.
+ * Consumer: retira um client_fd da fila usando semáforos (filled/empty + queue_mutex).
  */
 int dequeue_connection(shared_data_t* data, semaphores_t* sems) {
-    (void)sems; // thread pool usa mutex/cond locais
-
     int client_fd;
 
-    if (pthread_mutex_lock(&queue_mutex) != 0) {
-        perror("pthread_mutex_lock(queue_mutex)");
+    // Esperar por item disponível
+    while (sem_wait(sems->filled_slots) == -1) {
+        if (errno == EINTR) {
+            if (!keep_running) return -1;
+            continue;
+        }
+        perror("sem_wait(filled_slots)");
         return -1;
     }
 
-    while (keep_running && data->queue.count == 0) {
-        // bloqueia até haver trabalho ou shutdown
-        pthread_cond_wait(&queue_cond, &queue_mutex);
-    }
-
-    if (!keep_running) {
-        pthread_mutex_unlock(&queue_mutex);
+    if (sem_wait(sems->queue_mutex) == -1) {
+        perror("sem_wait(queue_mutex)");
+        // devolve o filled_slots consumido
+        sem_post(sems->filled_slots);
         return -1;
     }
 
-    // Retirar da fila circular (front)
+    if (data->queue.count == 0) {
+        sem_post(sems->queue_mutex);
+        return -1;
+    }
+
     client_fd = data->queue.sockets[data->queue.front];
-    data->queue.front = (data->queue.front + 1) % MAX_QUEUE_SIZE;       // O % MAX_QUEUE_SIZE garante wrap-around (quando chega ao fim do array volta ao início), de forma a obter uma fila circular.
+    data->queue.front = (data->queue.front + 1) % MAX_QUEUE_SIZE;
     data->queue.count--;
 
-    pthread_mutex_unlock(&queue_mutex);
+    sem_post(sems->queue_mutex);
+    sem_post(sems->empty_slots);
 
     return client_fd;
 }

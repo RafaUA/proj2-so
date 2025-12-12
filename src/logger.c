@@ -169,7 +169,7 @@ void logger_log_request(int client_fd,
     if (!g_initialized || !g_sems) return;
 
     /* Proteger todo o bloco com o semáforo de log */
-    SEM_WAIT_SAFE(g_sems->log_mutex);
+    SEM_WAIT_SAFE(&g_sems->log_mutex);
 
     char ip[64];
     get_client_ip(client_fd, ip, sizeof(ip));
@@ -226,20 +226,20 @@ void logger_log_request(int client_fd,
         }
     }
 
-    sem_post(g_sems->log_mutex);
+    sem_post(&g_sems->log_mutex);
 }
 
 
 void logger_shutdown(void) {
     if (!g_initialized) return;
 
-    SEM_WAIT_SAFE(g_sems->log_mutex);
+    SEM_WAIT_SAFE(&g_sems->log_mutex);
     logger_flush_unlocked();
     if (g_log_fp) {
         fclose(g_log_fp);
         g_log_fp = NULL;
     }
-    sem_post(g_sems->log_mutex);
+    sem_post(&g_sems->log_mutex);
 
     g_initialized = 0;
 }
