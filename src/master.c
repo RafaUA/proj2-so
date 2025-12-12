@@ -18,6 +18,7 @@
 #include "worker.h"
 #include "stats.h"
 #include "cache.h"
+#include "logger.h"
 
 volatile sig_atomic_t keep_running = 1;
 pthread_mutex_t queue_mutex = PTHREAD_MUTEX_INITIALIZER;
@@ -182,6 +183,15 @@ int main(int argc, char* argv[]) {
         return EXIT_FAILURE;
     }
 
+    // Inicializar sistema de logging
+    if (logger_init(config.log_file, &sems) < 0) {
+        fprintf(stderr, "Erro a inicializar logger\n");
+        destroy_semaphores(&sems);
+        destroy_shared_memory(shared);
+        close(listen_fd);
+        return EXIT_FAILURE;
+    }
+
     // Criar pool de worker threads (consumidores)
     int total_threads = config.num_workers * config.threads_per_worker;
     if (total_threads <= 0) total_threads = 1; // fallback seguro
@@ -298,6 +308,9 @@ int main(int argc, char* argv[]) {
     // Mostrar estatísticas finais
     stats_print(shared, &sems, difftime(time(NULL), start_time));
     
+    // Fechar sistema de logging (flush + close do ficheiro)
+    logger_shutdown();
+
     // Limpeza
     close(listen_fd);
     destroy_semaphores(&sems);

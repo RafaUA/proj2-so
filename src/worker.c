@@ -11,6 +11,7 @@
 #include "master.h"   // para keep_running
 #include "http.h"
 #include "cache.h"
+#include "logger.h"
 
 
 /**
@@ -215,6 +216,8 @@ finish:
             bytes_sent,
             response_time
         );
+
+        
     }
 
     // Se não veio do cache, libertar o buffer alocado pelo disco
