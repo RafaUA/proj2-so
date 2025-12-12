@@ -11,6 +11,7 @@ TARGET  = webserver
 # Ficheiros fonte
 SRCS    = $(SRC_DIR)/master.c \
           $(SRC_DIR)/worker.c \
+          $(SRC_DIR)/main.c \
           $(SRC_DIR)/shared_mem.c \
           $(SRC_DIR)/semaphores.c \
           $(SRC_DIR)/http.c \

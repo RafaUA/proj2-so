@@ -4,9 +4,6 @@
 #include <stdlib.h>
 
 int load_config(const char* filename, server_config_t* config) {
-    FILE* fp = fopen(filename, "r");
-    if (!fp) return -1;
-
     // inicializar com defaults razoáveis
     config->port = 8080;
     config->num_workers = 1;
@@ -16,6 +13,9 @@ int load_config(const char* filename, server_config_t* config) {
     config->timeout_seconds = 30;
     strcpy(config->document_root, "www");
     strcpy(config->log_file, "access.log");
+
+    FILE* fp = fopen(filename, "r");
+    if (!fp) return -1;
 
     char line[512], key[128], value[256];
     while (fgets(line, sizeof(line), fp)) {
