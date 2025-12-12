@@ -312,7 +312,8 @@ int main(int argc, char* argv[]) {
         int client_fd = accept(listen_fd, NULL, NULL);
         if (client_fd < 0) {
             if (errno == EINTR) {
-                // interrompido por sinal -> verifica keep_running e continua
+                // interrompido por sinal -> termina se já estamos a encerrar
+                if (!keep_running) break;
                 continue;
             }
             if (errno == EAGAIN || errno == EWOULDBLOCK) {
