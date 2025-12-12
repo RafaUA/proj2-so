@@ -8,7 +8,7 @@ SRC_DIR = src
 # Nome do executável
 TARGET  = webserver
 
-# Ficheiros fonte necessários para a Feature 1
+# Ficheiros fonte
 SRCS    = $(SRC_DIR)/master.c \
           $(SRC_DIR)/worker.c \
           $(SRC_DIR)/shared_mem.c \
@@ -40,7 +40,6 @@ clean:
 distclean: clean
 	rm -f *~ core
 
-# Conveniência: correr o servidor com o ficheiro de config
-# (ajusta se o teu ficheiro tiver outro nome)
+# Correr o servidor com o ficheiro de config
 run: $(TARGET)
 	./$(TARGET) server.conf
